@@ -1194,6 +1194,7 @@
               },
               {
                 "entity": 513,
+                "open": false,
                 "children": [
                   514,
                   515,
