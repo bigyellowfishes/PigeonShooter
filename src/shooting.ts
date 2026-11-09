@@ -1,20 +1,23 @@
 import {
-    engine,
-    InputAction,
-    inputSystem,
-    PointerEventType,
-    Transform,
-    Entity,
-    CameraModeArea,
-    CameraType,
-    PointerLock,
-    raycastSystem, 
-    RaycastQueryType,
-    PrimaryPointerInfo,
-    Name
+  engine,
+  InputAction,
+  inputSystem,
+  PointerEventType,
+  Transform,
+  Entity,
+  CameraModeArea,
+  CameraType,
+  PointerLock,
+  raycastSystem, 
+  RaycastQueryType,
+  PrimaryPointerInfo,
+  GltfContainer,
+  AvatarAttach,
+  AvatarAnchorPointType,
+  MeshRenderer,
+  Material
 } from '@dcl/sdk/ecs'
-
-import { Vector3 } from '@dcl/sdk/math'
+import { Vector3, Quaternion, Color4 } from '@dcl/sdk/math'
 import { ResetTarget, targets } from './targets'
 
 //
@@ -24,27 +27,54 @@ let pointerState: boolean | undefined
 // Set Up Script For Shooting, Called in index
 // --------------------------------------------------------------
 export function SetUpShooting() {
+    // Give Player Gun Visuals
+    SetUpPlayerVisuals()
 
     // Create a system that runs every frame
     engine.addSystem(() => {
 
         // Check if the left mouse button was pressed down anywhere on screen
         if (inputSystem.isTriggered(InputAction.IA_POINTER, PointerEventType.PET_DOWN)) {
-            //console.log("Global left mouse button DOWN")
             pointerState = PointerLock.getOrNull(engine.CameraEntity)?.isPointerLocked
             PointerLock.createOrReplace(engine.CameraEntity, {isPointerLocked: true})
             createFirstPersonZoneAtPlayer()
+            // Would be lovely if this works, but it pulls the player out of FPS
+            //triggerSceneEmote({ src: 'assets/Models/ShootingAnimation_emote/ShootingAnimation_emote.glb', loop: false, })
         }
 
         // Check if the left mouse button was released anywhere on screen
         if (inputSystem.isTriggered(InputAction.IA_POINTER, PointerEventType.PET_UP)) {
-            //console.log("Global left mouse button UP")
             if(pointerState != undefined) PointerLock.createOrReplace(engine.CameraEntity, {isPointerLocked: pointerState});
             removeFirstPersonZone()
             Shoot()
         }
     })
 }
+
+// Player Visuals
+function SetUpPlayerVisuals() {
+  // Create an invisible parent entity anchored to the player's right hand
+  const handAnchor = engine.addEntity()
+  Transform.create(handAnchor)
+  AvatarAttach.create(handAnchor, {
+    anchorPointId: AvatarAnchorPointType.AAPT_RIGHT_HAND,
+    // Omit avatarId to attach to the local player, or pass a specific user's Ethereum address/ID
+  })
+
+  // 2. Create the GLB entity as a child of the anchor so you can offset its grip/rotation
+  const heldItem = engine.addEntity()
+  GltfContainer.create(heldItem, {
+    src: 'assets/Models/Shotty/Shotty.glb',
+  })
+
+  Transform.create(heldItem, {
+    parent: handAnchor,
+    position: Vector3.create(0.05, 0.33, -0.1), // Adjust offset to fit the palm
+    rotation: Quaternion.fromEulerDegrees(185, 90, 90), // Adjust angle
+    scale: Vector3.create(1.2, 1.2, 1.2),
+  })
+}
+
 
 // --------------------------------------------------------------
 // Handle Player Camera
@@ -118,12 +148,72 @@ export function removeFirstPersonZone() {
 // Shooting
 // --------------------------------------------------------------
 
+type shotVisualType = {
+  entity: Entity
+  lifeTimer: number
+}
 
+const shotVisuals: shotVisualType[] = []
+
+const shotTime = 0.4
+
+// Draw Shot Visuals
+export function createLine(start: Vector3, end: Vector3, thickness: number = 0.04): Entity {
+  const lineEntity = engine.addEntity()
+
+  // 1. Calculate the midpoint between start and end
+  const position = Vector3.scale(Vector3.add(start, end), 0.5)
+
+  // 2. Calculate distance (stretches the cube along the Z-axis)
+  const length = Vector3.distance(start, end)
+
+  // 3. Compute the normalized direction vector and get the rotation
+  const direction = Vector3.normalize(Vector3.subtract(end, start))
+  const rotation = Quaternion.lookRotation(direction)
+
+  // 4. Apply the Transform component
+  Transform.create(lineEntity, {
+    position,
+    rotation,
+    scale: Vector3.create(thickness, thickness, length)
+  })
+
+  // 5. Add mesh and collider
+  MeshRenderer.setBox(lineEntity)
+
+  return lineEntity
+}
+
+// Draw Line Visuals
+function UpdateLine(dt: number, line: Entity) {
+  // Loop backwards to safely remove items while iterating
+  for (let i = shotVisuals.length - 1; i >= 0; i--) {
+    const shotVis = shotVisuals[i]
+    
+    if (shotVis.entity !== line) continue
+
+    Material.setPbrMaterial(shotVis.entity, {
+    albedoColor: Color4.create(1, 1, 0.2, shotVis.lifeTimer / shotTime),
+    emissiveColor: Color4.create(1, 1, 0.2, 1),
+    emissiveIntensity: 1.0,
+    roughness: 0.9,
+    castShadows: false,
+  })
+
+    shotVis.lifeTimer -= dt
+    if (shotVis.lifeTimer <= 0) {
+      shotVisuals.splice(i, 1)
+      engine.removeEntity(line)
+      break // Exit early since we found and removed the specific line
+    }
+  }
+}
 
 function Shoot() {
   const pointerInfo = PrimaryPointerInfo.getOrNull(engine.RootEntity)
   const camera = Transform.getOrNull(engine.CameraEntity)
-  if (!pointerInfo?.worldRayDirection || !camera) return
+  const player = Transform.getOrNull(engine.PlayerEntity)
+  if (!pointerInfo?.worldRayDirection || !camera || !player) return
 
   const dir = Vector3.create(
     pointerInfo.worldRayDirection.x,
@@ -146,7 +236,24 @@ function Shoot() {
       },
     },
     (result) => {
+      // Define Hit
       const hit = result.hits[0]
+
+      // Find End Position For Line
+      const rVec = Vector3.scale(Vector3.rotate(Vector3.Right(), camera.rotation), 0.2)
+      const startPos = Vector3.add(Vector3.add(player.position, Vector3.create(0, 1.5, 0)), rVec)
+      const rEnd = Vector3.scale(Vector3.rotate(Vector3.Forward(), camera.rotation), 250)
+      const fullEnd = Vector3.add(Vector3.add(player.position, Vector3.create(0, 1.5, 0)), rEnd)
+      const endPos = hit?.entityId !== undefined ? hit.position : fullEnd
+      if(endPos != undefined) {
+        const newline = createLine(startPos, endPos)
+        shotVisuals.push({ entity: newline, lifeTimer: shotTime })
+        engine.addSystem((dt) => {
+          UpdateLine(dt, newline)
+        })
+      }
+
+      // 
       if (hit?.entityId !== undefined) {
         for (const target of targets) {
           if (hit.entityId === target.entity) ResetTarget(target.entity)
