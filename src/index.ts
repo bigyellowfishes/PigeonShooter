@@ -1,12 +1,12 @@
 import {} from '@dcl/sdk/math'
-import { engine } from '@dcl/sdk/ecs'
+import {} from '@dcl/sdk/ecs'
 import { setupUi } from './ui'
-
+import { SetUpShooting } from './shooting'
+import { SetUpTargetSystem } from './targets';
 
 export function main() {
-    // uncomment the line below to initialize UI from ui.tsx
-    //setupUi()
-
-    // your scene code here
+    // Set Up Functions
+    setupUi()
+    SetUpTargetSystem()
+    SetUpShooting()
 }
-
