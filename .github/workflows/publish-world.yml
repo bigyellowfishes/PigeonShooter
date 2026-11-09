@@ -1,0 +1,32 @@
+# Publishes the scene to the bigyellowfishes.dcl.eth World.
+# Runs on every push to the Testing branch.
+# Needs the repo secret DCL_PRIVATE_KEY: the private key of a deploy-only wallet that has
+# deployment permission on bigyellowfishes.dcl.eth. Never use the wallet that owns the NAME.
+name: Publish to World
+
+on:
+  push:
+    branches: [Testing]
+
+concurrency:
+  group: publish-world
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install packages
+        run: npm ci
+
+      - name: Publish
+        env:
+          DCL_PRIVATE_KEY: ${{ secrets.DCL_PRIVATE_KEY }}
+        run: npm run deploy -- --target-content https://worlds-content-server.decentraland.org --yes
