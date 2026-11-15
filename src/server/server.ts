@@ -44,10 +44,7 @@ import {
   PlayerScore,
   RoundPhase,
   RoundState,
-  ServerClock,
-  SYNC_ID_CLOCK,
-  SYNC_ID_PIGEON_BASE,
-  SYNC_ID_ROUND
+  ServerClock
 } from '../shared/schemas'
 
 // ---------------------------------------------------------------------------
@@ -76,15 +73,25 @@ let clockEntity: Entity
 
 export function initServer() {
   console.log('[SERVER] Pigeon Shooter server starting')
+  try {
+    setupServerState()
+  } catch (e) {
+    console.error('[SERVER] Failed to start: ' + String(e) + ' ' + ((e as Error)?.stack ?? ''))
+    throw e
+  }
+  console.log('[SERVER] Ready: ' + PIGEON_COUNT + ' pigeons, waiting for players')
+}
+
+function setupServerState() {
   const now = Date.now()
 
   roundEntity = engine.addEntity()
   RoundState.create(roundEntity, { phase: RoundPhase.Waiting, endsAt: now, round: 0 })
-  syncEntity(roundEntity, [RoundState.componentId], SYNC_ID_ROUND)
+  syncEntity(roundEntity, [RoundState.componentId])
 
   clockEntity = engine.addEntity()
   ServerClock.create(clockEntity, { now })
-  syncEntity(clockEntity, [ServerClock.componentId], SYNC_ID_CLOCK)
+  syncEntity(clockEntity, [ServerClock.componentId])
 
   for (let i = 0; i < PIGEON_COUNT; i++) {
     const e = engine.addEntity()
@@ -100,7 +107,7 @@ export function initServer() {
       owner: '',
       golden: false
     })
-    syncEntity(e, [PigeonState.componentId], SYNC_ID_PIGEON_BASE + i)
+    syncEntity(e, [PigeonState.componentId])
     pigeons.push(e)
   }
 
@@ -119,21 +126,33 @@ export function initServer() {
     handleShot(context.from, data)
   })
 
-  let tickTimer = 0
-  let clockTimer = 0
-  engine.addSystem((dt) => {
-    clockTimer += dt
-    if (clockTimer >= CLOCK_EVERY) {
-      clockTimer = 0
-      ServerClock.getMutable(clockEntity).now = Date.now()
-    }
-    tickTimer += dt
-    if (tickTimer < TICK) return
-    tickTimer = 0
+  // Timed from Date.now() rather than the frame dt, so the pace never depends on how the headless runtime ticks
+  let lastTick = 0
+  let lastClock = 0
+  let lastStatus = 0
+  let errorCount = 0
+  engine.addSystem(() => {
     const t = Date.now()
-    updatePlayers(t)
-    updateRound(t)
-    updatePigeons(t)
+    if (t - lastClock >= CLOCK_EVERY * 1000) {
+      lastClock = t
+      ServerClock.getMutable(clockEntity).now = t
+    }
+    if (t - lastStatus >= 10000) {
+      lastStatus = t
+      const r = RoundState.get(roundEntity)
+      console.log('[SERVER] status: players=' + presentPlayers().length + ' known=' + players.size + ' round=' + r.round + ' phase=' + r.phase)
+    }
+    if (t - lastTick < TICK * 1000) return
+    lastTick = t
+    // Log and carry on rather than let one bad tick take the server down for everyone
+    try {
+      updatePlayers(t)
+      updateRound(t)
+      updatePigeons(t)
+    } catch (e) {
+      errorCount++
+      if (errorCount <= 5) console.error('[SERVER] Tick failed: ' + String(e) + ' ' + ((e as Error)?.stack ?? ''))
+    }
   })
 }
 

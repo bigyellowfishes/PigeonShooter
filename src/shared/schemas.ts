@@ -48,13 +48,11 @@ export const PlayerScore = engine.defineComponent('ps::Score', {
   best: Schemas.Int // best round score this session
 })
 
-// Fixed network ids for the singletons and pigeon slots
-export const SYNC_ID_ROUND = 1
-export const SYNC_ID_CLOCK = 2
-export const SYNC_ID_PIGEON_BASE = 100
-
-if (isServer()) {
-  const serverOnly = (v: { senderAddress: string }) => v.senderAddress === AUTH_SERVER_PEER_ID
+// Server-only write guards, registered from main() on both sides (a no-op on
+// clients), the same way as Decentraland's own Multiplayer Server examples.
+export function registerValidators() {
+  if (!isServer()) return
+  const serverOnly = (v: { senderAddress: string }) => v.senderAddress.toLowerCase() === AUTH_SERVER_PEER_ID.toLowerCase()
   PigeonState.validateBeforeChange(serverOnly)
   RoundState.validateBeforeChange(serverOnly)
   ServerClock.validateBeforeChange(serverOnly)
