@@ -1089,5 +1089,6 @@
   "rating": "A",
   "worldConfiguration": {
     "name": "bigyellowfishes.dcl.eth"
-  }
+  },
+  "authoritativeMultiplayer": true
 }
