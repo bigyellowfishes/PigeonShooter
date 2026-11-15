@@ -61,7 +61,30 @@ export const MESSAGES = {
     x: Schemas.Float,
     y: Schemas.Float,
     z: Schemas.Float
-  })
+  }),
+
+  // -------------------------------------------------------------------------
+  // Added 15 November for the shop, perks, Feathers and the weekly board.
+  // New messages rather than new fields, as THE ONE RULE above says.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Scene -> server. Buy or wear something: 'gun:shotgun', 'perk:windy' (in the break),
+   * 'cos:paint:pink' (buy with Feathers and wear), 'wear:paint:red' (wear one you have).
+   */
+  buy: Schemas.Map({ item: Schemas.String }),
+
+  /** Scene -> server. Fire a perk you hold, during the round. */
+  fire: Schemas.Map({ perk: Schemas.String }),
+
+  /** Server -> one player. Their budget, gun, perks, level, Feathers and cosmetics as JSON (MeWire). */
+  me: Schemas.Map({ json: Schemas.String }),
+
+  /** Server -> everyone. Running perks, Golden Hour and the week as JSON (ArenaWire). */
+  arena: Schemas.Map({ json: Schemas.String }),
+
+  /** Server -> everyone. This week's scoreboard as JSON (BoardWire). */
+  board: Schemas.Map({ json: Schemas.String })
 }
 
 export const room = registerMessages(MESSAGES)
@@ -92,6 +115,10 @@ export type PigeonWire = {
   sz: number
   owner: string // address of the player who popped it ('' while flying)
   golden: boolean
+  kind?: number // PigeonKind: normal, fast, zig-zag
+  slow?: boolean // popped under Slow Chutes: falls at half speed
+  decoy?: boolean // a Decoys pigeon: grey parachute, popping it breaks your streak
+  crate?: boolean // carries a crate: whoever collects it gets a free perk
 }
 
 // One player's score on the wire
@@ -107,4 +134,9 @@ export type ScoreWire = {
   catches: number
   grabs: number
   best: number
+  level?: number
+  gun?: string
+  paint?: string
+  trace?: string
+  title?: string
 }

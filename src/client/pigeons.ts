@@ -8,7 +8,8 @@ import {
   MeshRenderer,
   MeshCollider,
   Material,
-  MaterialTransparencyMode
+  MaterialTransparencyMode,
+  GltfNodeModifiers
 } from '@dcl/sdk/ecs'
 import { Vector3, Quaternion, Color4 } from '@dcl/sdk/math'
 import {
@@ -21,7 +22,7 @@ import {
   PIGEON_SCALE,
   PLAYER_COLOURS
 } from '../shared/config'
-import { pigeonPose } from '../shared/flight'
+import { launchProgress, pigeonPose } from '../shared/flight'
 import { PigeonPhase } from '../shared/phases'
 import { game, serverNow } from './store'
 
@@ -43,7 +44,18 @@ const MODELS = {
   pigeon: 'assets/Models/Pigeon/PS_Pigeon.glb',
   pigeonGolden: 'assets/Models/Pigeon/PS_Pigeon_Golden.glb',
   parachute: 'assets/Models/Pigeon/PS_Parachute.glb',
-  parachuteGolden: 'assets/Models/Pigeon/PS_Parachute_Golden.glb'
+  parachuteGolden: 'assets/Models/Pigeon/PS_Parachute_Golden.glb',
+  crate: 'assets/Models/Crate/PS_Crate.glb'
+}
+
+// Decoys wear a plain grey parachute
+const DECOY_CHUTE = {
+  modifiers: [
+    {
+      path: '',
+      material: { material: { $case: 'pbr' as const, pbr: { albedoColor: Color4.create(0.54, 0.59, 0.63, 1), roughness: 0.8, metallic: 0 } } }
+    }
+  ]
 }
 
 type Visual = {
@@ -64,6 +76,9 @@ type Visual = {
   yaw: number
   marker: Entity
   markerKey: string
+  crate: Entity
+  hasCrate: boolean
+  decoy: boolean
 }
 
 const visuals = new Map<number, Visual>()
@@ -120,6 +135,10 @@ function createVisual(): Visual {
     ]
   })
 
+  // A crate hangs under the feet of a crate pigeon
+  const crate = child(tumble, Vector3.create(0, -BODY_CENTRE, 0), Vector3.Zero())
+  GltfContainer.create(crate, { src: MODELS.crate, visibleMeshesCollisionMask: 0, invisibleMeshesCollisionMask: 0 })
+
   // Landing shadow: a flat disc on the ground in the shooter's colour
   const marker = engine.addEntity()
   Transform.create(marker, { position: Vector3.create(0, -50, 0), scale: Vector3.Zero() })
@@ -142,7 +161,10 @@ function createVisual(): Visual {
     offsetY: -BODY_CENTRE * S,
     yaw: 0,
     marker,
-    markerKey: ''
+    markerKey: '',
+    crate,
+    hasCrate: false,
+    decoy: false
   }
 }
 
@@ -167,6 +189,21 @@ function setModels(v: Visual, golden: boolean) {
   v.golden = golden
   GltfContainer.getMutable(v.bird).src = golden ? MODELS.pigeonGolden : MODELS.pigeon
   GltfContainer.getMutable(v.chute).src = golden ? MODELS.parachuteGolden : MODELS.parachute
+}
+
+function setCrate(v: Visual, on: boolean, landed: boolean) {
+  v.hasCrate = on
+  const t = Transform.getMutable(v.crate)
+  t.scale = on ? Vector3.One() : Vector3.Zero()
+  // Hanging under the feet in the air; on the ground it sits beside the pigeon
+  t.position = landed ? Vector3.create(0.16, -BODY_CENTRE + 0.13, 0.04) : Vector3.create(0, -BODY_CENTRE, 0)
+}
+
+function setDecoy(v: Visual, decoy: boolean) {
+  if (v.decoy === decoy) return
+  v.decoy = decoy
+  if (decoy) GltfNodeModifiers.createOrReplace(v.chute, DECOY_CHUTE)
+  else GltfNodeModifiers.deleteFrom(v.chute)
 }
 
 function colourOf(address: string): [number, number, number] {
@@ -210,10 +247,12 @@ function fireCannon(index: number) {
 // ---------------------------------------------------------------------------
 // Phase changes
 // ---------------------------------------------------------------------------
-function onEnterPhase(v: Visual, st: { phase: number; cannon: number; golden: boolean; t0: number }, tau: number) {
+function onEnterPhase(v: Visual, st: { phase: number; cannon: number; golden: boolean; t0: number; crate?: boolean; decoy?: boolean }, tau: number) {
   const S = PIGEON_SCALE
+  setCrate(v, !!st.crate && st.phase !== PigeonPhase.Idle, st.phase === PigeonPhase.Landed)
   if (st.phase === PigeonPhase.Launch) {
     setModels(v, st.golden)
+    setDecoy(v, !!st.decoy)
     if (tau < 1) fireCannon(st.cannon) // skip the bang when joining mid-flight
     v.chuteFree = false
     v.offsetY = -BODY_CENTRE * S
@@ -223,6 +262,7 @@ function onEnterPhase(v: Visual, st: { phase: number; cannon: number; golden: bo
     hideMarker(v)
   } else if (st.phase === PigeonPhase.Flying) {
     setModels(v, st.golden)
+    setDecoy(v, !!st.decoy)
     v.chuteFree = false
     setScale(v.birdOffset, S)
     setScale(v.chute, S)
@@ -277,7 +317,8 @@ function pigeonSystem(rawDt: number) {
       visuals.set(st.slot, v)
     }
     const t0 = Number(st.t0)
-    const pose = pigeonPose({ ...st, t0 }, now)
+    const perks = game.arena.perks
+    const pose = pigeonPose({ ...st, t0 }, now, perks)
 
     if (st.phase !== v.prevPhase || t0 !== v.prevT0) {
       const phaseChanged = st.phase !== v.prevPhase
@@ -285,7 +326,7 @@ function pigeonSystem(rawDt: number) {
       v.prevT0 = t0
       if (phaseChanged) {
         v.enteredAt = clock
-        onEnterPhase(v, { phase: st.phase, cannon: st.cannon, golden: st.golden, t0 }, pose.tau)
+        onEnterPhase(v, { phase: st.phase, cannon: st.cannon, golden: st.golden, t0, crate: st.crate, decoy: st.decoy }, pose.tau)
       }
     }
 
@@ -297,8 +338,9 @@ function pigeonSystem(rawDt: number) {
     let snapOffset = false
 
     if (st.phase === PigeonPhase.Launch) {
-      if (pose.tau >= LAUNCH_HIDE) setScale(v.birdOffset, S)
-      const spin = 360 * LAUNCH_SPINS * smooth(pose.tau / LAUNCH_TIME)
+      const flown = launchProgress({ ...st, t0 }, now, perks)
+      if (flown >= LAUNCH_HIDE) setScale(v.birdOffset, S)
+      const spin = 360 * LAUNCH_SPINS * smooth(flown / LAUNCH_TIME)
       Transform.getMutable(v.tumble).rotation = Quaternion.fromEulerDegrees(spin, 0, 0)
     } else if (st.phase === PigeonPhase.Flying) {
       wantOffset = -CANOPY_CENTRE * S

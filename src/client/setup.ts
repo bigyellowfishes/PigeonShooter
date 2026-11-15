@@ -1,5 +1,7 @@
 import { engine, Transform } from '@dcl/sdk/ecs'
 import { PigeonWire, room, ScoreWire } from '../shared/messages'
+import { ArenaWire, BoardWire, MeWire } from '../shared/rules'
+import { setupPlayers } from './players'
 import { setupPigeons } from './pigeons'
 import { setupShooting } from './shooting'
 import { getMyName, onGameEvent } from './state'
@@ -29,9 +31,20 @@ export function setupClient() {
     game.scores = parse<ScoreWire[]>(d.json, game.scores)
   })
   room.onMessage('event', (d) => onGameEvent(d))
+  room.onMessage('me', (d) => {
+    game.me = parse<MeWire>(d.json, game.me)
+    game.heardMe = true
+  })
+  room.onMessage('arena', (d) => {
+    game.arena = parse<ArenaWire>(d.json, game.arena)
+  })
+  room.onMessage('board', (d) => {
+    game.board = parse<BoardWire>(d.json, game.board)
+  })
 
   setupPigeons()
   setupShooting()
+  setupPlayers()
   setupUi()
 
   // Messages sent before the room connects are queued, so hello can go now.
