@@ -1,16 +1,14 @@
 import { isServer } from '@dcl/sdk/network'
-// Synced components and messages must be defined while the modules load, before the engine seals
-import { registerValidators } from './shared/schemas'
-import './shared/messages'
-import { initClient } from './client/setup'
+import { setupClient } from './client/setup'
+import { runServer } from './server/server'
 
-// One codebase, branched by isServer(), following Decentraland's Multiplayer Server examples.
-export async function main() {
-  registerValidators()
+// Set up the same way as Pixel Golf: one synchronous main(), branched by isServer().
+// The Multiplayer Server runs the game (src/server/server.ts); every player's
+// scene draws it and sends their shots (src/client).
+export function main() {
   if (isServer()) {
-    const { initServer } = await import('./server/server')
-    initServer()
+    runServer()
     return
   }
-  initClient()
+  setupClient()
 }

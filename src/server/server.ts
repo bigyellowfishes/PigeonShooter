@@ -1,6 +1,5 @@
-import { engine, Entity, PlayerIdentityData, Transform } from '@dcl/sdk/ecs'
+import { engine } from '@dcl/sdk/ecs'
 import { Vector3 } from '@dcl/sdk/math'
-import { syncEntity } from '@dcl/sdk/network'
 import {
   BREAK_SECONDS,
   CANNONS,
@@ -37,214 +36,190 @@ import {
   STREAK_STEP
 } from '../shared/config'
 import { fallDuration, pigeonPose } from '../shared/flight'
-import { GameEvent, room } from '../shared/messages'
-import {
-  PigeonPhase,
-  PigeonState,
-  PlayerScore,
-  RoundPhase,
-  RoundState,
-  ServerClock
-} from '../shared/schemas'
+import { GameEvent, PigeonWire, room, ScoreWire } from '../shared/messages'
+import { PigeonPhase, RoundPhase } from '../shared/phases'
 
-// ---------------------------------------------------------------------------
-// The Multiplayer Server: owns rounds, pigeons, hits, catches, steals and scores.
-// ---------------------------------------------------------------------------
+/**
+ * The Pigeon Shooter server. Runs only on the Multiplayer Server (see main() in
+ * index.ts), never in a player's client. Built the same way as Pixel Golf's
+ * ledger: all state lives in memory here and goes out to the scenes as
+ * messages; nothing is a synced component.
+ *
+ * It owns the rounds, the pigeons, every hit, catch and steal, and the scores.
+ * Players report where they are a few times a second; their shots arrive as
+ * rays, and the server decides what each one hit.
+ */
 
-const TICK = 0.1 // seconds between rule updates
-const CLOCK_EVERY = 1.0 // seconds between clock pulses (doubles as the liveness heartbeat)
-const PLAYER_GONE_AFTER = 20 // seconds before a departed player's score is removed
+const TICK_MS = 100 // rule updates
+const ROUND_PULSE_MS = 1000 // the round message doubles as the clock and the heartbeat
+const PRESENCE_MS = 10000 // a player counts as here this long after their last message
+const FORGET_MS = 60000 // and is forgotten this long after it
+const MAX_SPEED = 30 // m/s; reported positions moving faster than this are ignored
 
-type PlayerInfo = {
+type Player = {
   address: string
   name: string
-  scoreEntity: Entity | null
+  colour: number
   position: Vector3 | null
-  lastPosition: Vector3 | null
-  lastSeen: number // server ms
+  lastPosAt: number
+  lastSeen: number
   speed: number
-  present: boolean
+  score: ScoreWire
 }
 
-const players = new Map<string, PlayerInfo>()
-const pigeons: Entity[] = []
-let roundEntity: Entity
-let clockEntity: Entity
+const players = new Map<string, Player>()
+const pigeons: PigeonWire[] = []
+const round = { phase: RoundPhase.Waiting as number, endsAt: 0, round: 0 }
 
-export function initServer() {
+let pigeonsDirty = true
+let scoresDirty = true
+let roundDirty = true
+
+const now = () => Date.now()
+
+export function runServer(): void {
   console.log('[SERVER] Pigeon Shooter server starting')
-  try {
-    setupServerState()
-  } catch (e) {
-    console.error('[SERVER] Failed to start: ' + String(e) + ' ' + ((e as Error)?.stack ?? ''))
-    throw e
-  }
-  console.log('[SERVER] Ready: ' + PIGEON_COUNT + ' pigeons, waiting for players')
-}
-
-function setupServerState() {
-  const now = Date.now()
-
-  roundEntity = engine.addEntity()
-  RoundState.create(roundEntity, { phase: RoundPhase.Waiting, endsAt: now, round: 0 })
-  syncEntity(roundEntity, [RoundState.componentId])
-
-  clockEntity = engine.addEntity()
-  ServerClock.create(clockEntity, { now })
-  syncEntity(clockEntity, [ServerClock.componentId])
 
   for (let i = 0; i < PIGEON_COUNT; i++) {
-    const e = engine.addEntity()
-    PigeonState.create(e, {
-      slot: i,
-      phase: PigeonPhase.Idle,
-      cannon: 0,
-      seed: 0,
-      t0: now + 1e9,
-      sx: 0,
-      sy: 0,
-      sz: 0,
-      owner: '',
-      golden: false
-    })
-    syncEntity(e, [PigeonState.componentId])
-    pigeons.push(e)
+    pigeons.push({ slot: i, phase: PigeonPhase.Idle, cannon: 0, seed: 0, t0: 0, sx: 0, sy: 0, sz: 0, owner: '', golden: false })
   }
 
   room.onMessage('hello', (data, context) => {
-    if (!context) return
-    const p = getPlayer(context.from)
+    const address = context?.from
+    if (!address) return
+    const p = getPlayer(address)
+    p.lastSeen = now()
     const name = (data.name || '').trim().slice(0, 24)
-    if (name) p.name = name
-    ensureScore(p)
-    const s = PlayerScore.getMutable(p.scoreEntity!)
-    s.name = p.name
+    if (name && name !== p.name) {
+      p.name = name
+      p.score.name = name
+      scoresDirty = true
+    }
+    // Everything a newcomer needs to draw the arena as it is right now
+    sendRound([address])
+    void room.send('pigeons', { json: JSON.stringify(pigeons) }, { to: [address] })
+    void room.send('scores', { json: JSON.stringify(scoreList()) }, { to: [address] })
+  })
+
+  room.onMessage('pos', (data, context) => {
+    const address = context?.from
+    if (!address) return
+    const p = getPlayer(address)
+    const t = now()
+    const pos = Vector3.create(data.x, data.y, data.z)
+    if (p.position && p.lastPosAt > 0) {
+      const dt = Math.max(0.05, (t - p.lastPosAt) / 1000)
+      const flat = Math.hypot(pos.x - p.position.x, pos.z - p.position.z)
+      const speed = flat / dt
+      if (speed > MAX_SPEED && dt < 2) return // a jump this big isn't running; ignore it
+      p.speed = p.speed * 0.5 + speed * 0.5
+    }
+    p.position = pos
+    p.lastPosAt = t
+    p.lastSeen = t
   })
 
   room.onMessage('shoot', (data, context) => {
-    if (!context) return
-    handleShot(context.from, data)
+    const address = context?.from
+    if (!address) return
+    handleShot(address, data)
   })
 
-  // Timed from Date.now() rather than the frame dt, so the pace never depends on how the headless runtime ticks
   let lastTick = 0
-  let lastClock = 0
+  let lastPulse = 0
   let lastStatus = 0
-  let errorCount = 0
+  let errors = 0
   engine.addSystem(() => {
-    const t = Date.now()
-    if (t - lastClock >= CLOCK_EVERY * 1000) {
-      lastClock = t
-      ServerClock.getMutable(clockEntity).now = t
-    }
-    if (t - lastStatus >= 10000) {
-      lastStatus = t
-      const r = RoundState.get(roundEntity)
-      console.log('[SERVER] status: players=' + presentPlayers().length + ' known=' + players.size + ' round=' + r.round + ' phase=' + r.phase)
-    }
-    if (t - lastTick < TICK * 1000) return
+    const t = now()
+    if (t - lastTick < TICK_MS) return
     lastTick = t
-    // Log and carry on rather than let one bad tick take the server down for everyone
     try {
       updatePlayers(t)
       updateRound(t)
       updatePigeons(t)
+      if (roundDirty || t - lastPulse >= ROUND_PULSE_MS) {
+        roundDirty = false
+        lastPulse = t
+        sendRound()
+      }
+      if (pigeonsDirty) {
+        pigeonsDirty = false
+        void room.send('pigeons', { json: JSON.stringify(pigeons) })
+      }
+      if (scoresDirty) {
+        scoresDirty = false
+        void room.send('scores', { json: JSON.stringify(scoreList()) })
+      }
+      if (t - lastStatus >= 10000) {
+        lastStatus = t
+        console.log('[SERVER] status: players=' + present().length + ' round=' + round.round + ' phase=' + round.phase)
+      }
     } catch (e) {
-      errorCount++
-      if (errorCount <= 5) console.error('[SERVER] Tick failed: ' + String(e) + ' ' + ((e as Error)?.stack ?? ''))
+      errors++
+      if (errors <= 5) console.error('[SERVER] tick failed: ' + String(e))
     }
   })
+
+  console.log('[SERVER] ready, waiting for players')
 }
 
 // ---------------------------------------------------------------------------
 // Players
 // ---------------------------------------------------------------------------
-function getPlayer(address: string): PlayerInfo {
+function getPlayer(address: string): Player {
   const key = address.toLowerCase()
   let p = players.get(key)
   if (!p) {
+    const name = 'Player ' + key.slice(-4)
+    const colour = nextColour()
     p = {
       address: key,
-      name: 'Player ' + key.slice(-4),
-      scoreEntity: null,
+      name,
+      colour,
       position: null,
-      lastPosition: null,
-      lastSeen: Date.now(),
+      lastPosAt: 0,
+      lastSeen: now(),
       speed: 0,
-      present: true
+      score: { address: key, name, colour, score: 0, shotStreak: 0, catchStreak: 0, shots: 0, hits: 0, catches: 0, grabs: 0, best: 0 }
     }
     players.set(key, p)
+    scoresDirty = true
   }
   return p
 }
 
 function nextColour(): number {
   const used = new Set<number>()
-  for (const p of players.values()) {
-    if (p.scoreEntity && PlayerScore.has(p.scoreEntity)) used.add(PlayerScore.get(p.scoreEntity).colour)
-  }
+  for (const p of players.values()) used.add(p.colour)
   for (let i = 0; i < PLAYER_COLOURS.length; i++) if (!used.has(i)) return i
   return players.size % PLAYER_COLOURS.length
 }
 
-function ensureScore(p: PlayerInfo) {
-  if (p.scoreEntity && PlayerScore.getOrNull(p.scoreEntity)) return
-  const e = engine.addEntity()
-  PlayerScore.create(e, {
-    address: p.address,
-    name: p.name,
-    colour: nextColour(),
-    score: 0,
-    shotStreak: 0,
-    catchStreak: 0,
-    shots: 0,
-    hits: 0,
-    catches: 0,
-    grabs: 0,
-    best: 0
-  })
-  syncEntity(e, [PlayerScore.componentId])
-  p.scoreEntity = e
+function present(): Player[] {
+  const t = now()
+  return [...players.values()].filter((p) => t - p.lastSeen <= PRESENCE_MS)
 }
 
-function updatePlayers(now: number) {
-  const seen = new Set<string>()
-  for (const [entity, identity] of engine.getEntitiesWith(PlayerIdentityData)) {
-    const key = identity.address.toLowerCase()
-    seen.add(key)
-    const p = getPlayer(key)
-    p.present = true
-    const tr = Transform.getOrNull(entity)
-    if (tr) {
-      const pos = Vector3.clone(tr.position)
-      if (p.position) {
-        const dtSec = Math.max(0.05, (now - p.lastSeen) / 1000)
-        const flat = Math.hypot(pos.x - p.position.x, pos.z - p.position.z)
-        p.speed = p.speed * 0.5 + (flat / dtSec) * 0.5
-      }
-      p.lastPosition = p.position
-      p.position = pos
-    }
-    p.lastSeen = now
-    ensureScore(p)
-  }
-  for (const p of players.values()) {
-    if (seen.has(p.address)) continue
-    p.present = false
-    if (now - p.lastSeen > PLAYER_GONE_AFTER * 1000) {
-      if (p.scoreEntity) engine.removeEntity(p.scoreEntity)
+function updatePlayers(t: number) {
+  for (const p of [...players.values()]) {
+    if (t - p.lastSeen > FORGET_MS) {
       players.delete(p.address)
+      scoresDirty = true
     }
   }
 }
 
-function presentPlayers(): PlayerInfo[] {
-  return [...players.values()].filter((p) => p.present)
+function scoreList(): ScoreWire[] {
+  return [...players.values()].map((p) => p.score)
 }
 
 // ---------------------------------------------------------------------------
 // Rounds
 // ---------------------------------------------------------------------------
+function sendRound(to?: string[]) {
+  void room.send('round', { phase: round.phase, endsAt: round.endsAt, round: round.round, now: now() }, to ? { to } : undefined)
+}
+
 function broadcast(e: Partial<GameEvent> & { kind: string }, to?: string[]) {
   const full: GameEvent = {
     kind: e.kind,
@@ -262,15 +237,13 @@ function broadcast(e: Partial<GameEvent> & { kind: string }, to?: string[]) {
   void room.send('event', full, to ? { to } : undefined)
 }
 
-function startRound(now: number) {
-  const r = RoundState.getMutable(roundEntity)
-  r.phase = RoundPhase.Playing
-  r.endsAt = now + ROUND_SECONDS * 1000
-  r.round += 1
+function startRound(t: number) {
+  round.phase = RoundPhase.Playing
+  round.endsAt = t + ROUND_SECONDS * 1000
+  round.round += 1
+  roundDirty = true
   for (const p of players.values()) {
-    if (!p.scoreEntity) continue
-    const s = PlayerScore.getMutableOrNull(p.scoreEntity)
-    if (!s) continue
+    const s = p.score
     s.score = 0
     s.shotStreak = 0
     s.catchStreak = 0
@@ -279,49 +252,47 @@ function startRound(now: number) {
     s.catches = 0
     s.grabs = 0
   }
-  for (const e of pigeons) {
-    const st = PigeonState.getMutable(e)
-    st.phase = PigeonPhase.Idle
-    st.owner = ''
-    st.t0 = now + Math.random() * FIRST_LAUNCH_SPREAD * 1000
+  scoresDirty = true
+  for (const pg of pigeons) {
+    pg.phase = PigeonPhase.Idle
+    pg.owner = ''
+    pg.t0 = t + Math.random() * FIRST_LAUNCH_SPREAD * 1000
   }
-  console.log('[SERVER] Round ' + r.round + ' started with ' + presentPlayers().length + ' player(s)')
+  pigeonsDirty = true
+  console.log('[SERVER] round ' + round.round + ' started with ' + present().length + ' player(s)')
   broadcast({ kind: 'roundStart' })
 }
 
-function endRound(now: number) {
-  const r = RoundState.getMutable(roundEntity)
-  r.phase = RoundPhase.Break
-  r.endsAt = now + BREAK_SECONDS * 1000
-  for (const e of pigeons) {
-    const st = PigeonState.getMutable(e)
-    st.phase = PigeonPhase.Idle
-    st.owner = ''
-    st.t0 = now + 1e9
+function endRound(t: number, next: number) {
+  round.phase = next
+  round.endsAt = t + BREAK_SECONDS * 1000
+  roundDirty = true
+  for (const pg of pigeons) {
+    pg.phase = PigeonPhase.Idle
+    pg.owner = ''
+    pg.t0 = t + 1e9
   }
-  for (const p of players.values()) {
-    if (!p.scoreEntity) continue
-    const s = PlayerScore.getMutableOrNull(p.scoreEntity)
-    if (s && s.score > s.best) s.best = s.score
-  }
-  console.log('[SERVER] Round ' + r.round + ' ended')
+  pigeonsDirty = true
+  for (const p of players.values()) if (p.score.score > p.score.best) p.score.best = p.score.score
+  scoresDirty = true
+  console.log('[SERVER] round ' + round.round + ' ended')
   broadcast({ kind: 'roundEnd' })
 }
 
-function updateRound(now: number) {
-  const r = RoundState.get(roundEntity)
-  const count = presentPlayers().length
-  if (r.phase === RoundPhase.Waiting) {
-    if (count >= MIN_PLAYERS_TO_START) startRound(now)
-  } else if (r.phase === RoundPhase.Playing) {
-    if (count === 0) {
-      endRound(now)
-      RoundState.getMutable(roundEntity).phase = RoundPhase.Waiting
-    } else if (now >= r.endsAt) endRound(now)
-  } else if (r.phase === RoundPhase.Break) {
-    if (now >= r.endsAt) {
-      if (count >= MIN_PLAYERS_TO_START) startRound(now)
-      else RoundState.getMutable(roundEntity).phase = RoundPhase.Waiting
+function updateRound(t: number) {
+  const count = present().length
+  if (round.phase === RoundPhase.Waiting) {
+    if (count >= MIN_PLAYERS_TO_START) startRound(t)
+  } else if (round.phase === RoundPhase.Playing) {
+    if (count === 0) endRound(t, RoundPhase.Waiting)
+    else if (t >= round.endsAt) endRound(t, RoundPhase.Break)
+  } else if (round.phase === RoundPhase.Break) {
+    if (t >= round.endsAt) {
+      if (count >= MIN_PLAYERS_TO_START) startRound(t)
+      else {
+        round.phase = RoundPhase.Waiting
+        roundDirty = true
+      }
     }
   }
 }
@@ -329,90 +300,77 @@ function updateRound(now: number) {
 // ---------------------------------------------------------------------------
 // Pigeons
 // ---------------------------------------------------------------------------
-function relaunchDelay(): number {
-  return (RELAUNCH_MIN + Math.random() * (RELAUNCH_MAX - RELAUNCH_MIN)) * 1000
-}
-
-function setIdle(e: Entity, now: number) {
-  const st = PigeonState.getMutable(e)
-  st.phase = PigeonPhase.Idle
-  st.owner = ''
-  st.t0 = now + relaunchDelay()
-}
-
-function scoreOf(address: string) {
-  const p = players.get(address)
-  if (!p || !p.scoreEntity) return null
-  return PlayerScore.getMutableOrNull(p.scoreEntity)
-}
-
-function nameOf(address: string): string {
-  return players.get(address)?.name ?? 'Someone'
+function setIdle(pg: PigeonWire, t: number) {
+  pg.phase = PigeonPhase.Idle
+  pg.owner = ''
+  pg.t0 = t + (RELAUNCH_MIN + Math.random() * (RELAUNCH_MAX - RELAUNCH_MIN)) * 1000
+  pigeonsDirty = true
 }
 
 function horizontalDistance(a: Vector3, x: number, z: number): number {
   return Math.hypot(a.x - x, a.z - z)
 }
 
-function updatePigeons(now: number) {
-  const playing = RoundState.get(roundEntity).phase === RoundPhase.Playing
-  for (const e of pigeons) {
-    const st = PigeonState.get(e)
-    const tau = (now - st.t0) / 1000
+function updatePigeons(t: number) {
+  const playing = round.phase === RoundPhase.Playing
+  for (const pg of pigeons) {
+    const tau = (t - pg.t0) / 1000
 
-    if (st.phase === PigeonPhase.Idle) {
-      if (!playing || now < st.t0) continue
-      const m = PigeonState.getMutable(e)
-      m.phase = PigeonPhase.Launch
-      m.cannon = Math.floor(Math.random() * CANNONS.length)
-      m.seed = Math.floor(Math.random() * 2147483647)
-      m.t0 = now
-      m.owner = ''
-      m.golden = Math.random() < GOLDEN_CHANCE
-    } else if (st.phase === PigeonPhase.Launch) {
+    if (pg.phase === PigeonPhase.Idle) {
+      if (!playing || t < pg.t0) continue
+      pg.phase = PigeonPhase.Launch
+      pg.cannon = Math.floor(Math.random() * CANNONS.length)
+      pg.seed = Math.floor(Math.random() * 2147483647)
+      pg.t0 = t
+      pg.owner = ''
+      pg.golden = Math.random() < GOLDEN_CHANCE
+      pigeonsDirty = true
+    } else if (pg.phase === PigeonPhase.Launch) {
       if (tau >= LAUNCH_TIME) {
-        const m = PigeonState.getMutable(e)
-        m.phase = PigeonPhase.Flying
-        m.t0 = st.t0 + LAUNCH_TIME * 1000
+        pg.phase = PigeonPhase.Flying
+        pg.t0 = pg.t0 + LAUNCH_TIME * 1000
+        pigeonsDirty = true
       }
-    } else if (st.phase === PigeonPhase.Falling) {
-      const landAfter = fallDuration(st.sy)
-      const pose = pigeonPose(st, now)
+    } else if (pg.phase === PigeonPhase.Falling) {
+      const landAfter = fallDuration(pg.sy)
+      const pose = pigeonPose(pg, t)
       // Only the shooter can catch it in the air
-      const owner = players.get(st.owner)
-      if (owner && owner.present && owner.position && pose.position.y <= CATCH_HEIGHT) {
-        if (horizontalDistance(owner.position, st.sx, st.sz) <= CATCH_RADIUS) {
-          awardCatch(st.owner, st.slot, st.golden, st.sx, st.sz)
-          setIdle(e, now)
+      const owner = players.get(pg.owner)
+      if (owner && owner.position && t - owner.lastSeen <= PRESENCE_MS && pose.position.y <= CATCH_HEIGHT) {
+        if (horizontalDistance(owner.position, pg.sx, pg.sz) <= CATCH_RADIUS) {
+          awardCatch(owner, pg)
+          setIdle(pg, t)
           continue
         }
       }
       if (tau >= landAfter) {
-        const m = PigeonState.getMutable(e)
-        m.phase = PigeonPhase.Landed
-        m.t0 = st.t0 + Math.round(landAfter * 1000)
-        // Missed catch: the shooter's catch streak ends
-        const s = scoreOf(st.owner)
-        if (s) s.catchStreak = 0
-        broadcast({ kind: 'lost', who: st.owner, whoName: nameOf(st.owner), slot: st.slot, x: st.sx, y: 0, z: st.sz })
+        pg.phase = PigeonPhase.Landed
+        pg.t0 = pg.t0 + Math.round(landAfter * 1000)
+        pigeonsDirty = true
+        // A missed catch ends the shooter's catch streak
+        if (owner) {
+          owner.score.catchStreak = 0
+          scoresDirty = true
+        }
+        broadcast({ kind: 'lost', who: pg.owner, whoName: owner?.name ?? '', slot: pg.slot, x: pg.sx, y: 0, z: pg.sz })
       }
-    } else if (st.phase === PigeonPhase.Landed) {
+    } else if (pg.phase === PigeonPhase.Landed) {
       // Anyone can grab a landed pigeon, the shooter included
-      let grabber: PlayerInfo | null = null
+      let grabber: Player | null = null
       let best = GRAB_RADIUS
-      for (const p of presentPlayers()) {
+      for (const p of present()) {
         if (!p.position) continue
-        const d = horizontalDistance(p.position, st.sx, st.sz)
+        const d = horizontalDistance(p.position, pg.sx, pg.sz)
         if (d <= best) {
           best = d
           grabber = p
         }
       }
       if (grabber && playing) {
-        awardGrab(grabber.address, st.owner, st.slot, st.golden, st.sx, st.sz)
-        setIdle(e, now)
+        awardGrab(grabber, pg)
+        setIdle(pg, t)
       } else if (tau >= GROUND_SECONDS) {
-        setIdle(e, now)
+        setIdle(pg, t)
       }
     }
   }
@@ -435,116 +393,96 @@ function raySphere(o: Vector3, d: Vector3, c: Vector3, r: number): number {
   return t
 }
 
-function handleShot(
-  from: string,
-  data: { ox: number; oy: number; oz: number; dx: number; dy: number; dz: number }
-) {
-  const now = Date.now()
-  if (RoundState.get(roundEntity).phase !== RoundPhase.Playing) return
+function handleShot(from: string, data: { ox: number; oy: number; oz: number; dx: number; dy: number; dz: number }) {
+  const t = now()
+  if (round.phase !== RoundPhase.Playing) return
   const shooter = getPlayer(from)
-  ensureScore(shooter)
-  const score = PlayerScore.getMutable(shooter.scoreEntity!)
+  shooter.lastSeen = t
+  const score = shooter.score
   score.shots += 1
+  scoresDirty = true
 
   const origin = Vector3.create(data.ox, data.oy, data.oz)
-  if (shooter.position) {
-    if (Vector3.distance(origin, shooter.position) > SHOT_ORIGIN_TOLERANCE) {
-      console.log('[SERVER] Rejected shot from ' + shooter.address + ': gun too far from player')
-      return
-    }
-  } else {
-    console.log('[SERVER] No server position for ' + shooter.address + ', accepting reported gun position')
+  if (shooter.position && Vector3.distance(origin, shooter.position) > SHOT_ORIGIN_TOLERANCE) {
+    console.log('[SERVER] ignored a shot from ' + shooter.address + ': gun too far from the player')
+    return
   }
   const len = Math.hypot(data.dx, data.dy, data.dz)
   if (!(len > 0.0001)) return
   const dir = Vector3.create(data.dx / len, data.dy / len, data.dz / len)
 
-  // Find the nearest parachute along the ray, now or a moment ago (lag compensation)
+  // The nearest parachute along the ray, now or a moment ago (to allow for lag)
   let bestT = Infinity
-  let bestEntity: Entity | null = null
-  let bestPos: Vector3 | null = null
-  for (const e of pigeons) {
-    const st = PigeonState.get(e)
-    const flyingNow = st.phase === PigeonPhase.Flying || (st.phase === PigeonPhase.Launch && now - st.t0 >= LAUNCH_TIME * 1000)
-    if (!flyingNow) continue
+  let hit: PigeonWire | null = null
+  for (const pg of pigeons) {
+    const flying = pg.phase === PigeonPhase.Flying || (pg.phase === PigeonPhase.Launch && t - pg.t0 >= LAUNCH_TIME * 1000)
+    if (!flying) continue
     for (const back of LAG_COMPENSATION) {
-      const at = now - back * 1000
-      const pose = pigeonPose(st, at)
-      const t = raySphere(origin, dir, pose.position, HIT_RADIUS)
-      if (t >= 0 && t <= MAX_SHOT_DISTANCE && t < bestT) {
-        bestT = t
-        bestEntity = e
-        bestPos = pigeonPose(st, now).position
+      const pose = pigeonPose(pg, t - back * 1000)
+      const d = raySphere(origin, dir, pose.position, HIT_RADIUS)
+      if (d >= 0 && d <= MAX_SHOT_DISTANCE && d < bestT) {
+        bestT = d
+        hit = pg
       }
     }
   }
 
-  if (!bestEntity || !bestPos) {
+  if (!hit) {
     score.shotStreak = 0
-    broadcast({ kind: 'miss', who: shooter.address, whoName: shooter.name }, [shooter.address])
+    broadcast({ kind: 'miss', who: shooter.address, whoName: shooter.name }, [from])
     return
   }
 
-  const st = PigeonState.get(bestEntity)
+  const at = pigeonPose(hit, t).position
   const multiplier = Math.min(MAX_SHOT_MULTIPLIER, 1 + STREAK_STEP * score.shotStreak)
-  const longBonus = Math.min(LONG_SHOT_MAX_BONUS, Math.max(0, (bestT - LONG_SHOT_FROM) / LONG_SHOT_SPAN) * LONG_SHOT_MAX_BONUS)
+  const longBonus = Math.min(LONG_SHOT_MAX_BONUS, (Math.max(0, bestT - LONG_SHOT_FROM) / LONG_SHOT_SPAN) * LONG_SHOT_MAX_BONUS)
   const runBonus = shooter.speed >= RUNNING_SPEED ? RUNNING_BONUS : 0
-  const golden = st.golden ? GOLDEN_MULTIPLIER : 1
-  const points = Math.round(POINTS_HIT * multiplier * (1 + longBonus) * (1 + runBonus) * golden)
+  const points = Math.round(POINTS_HIT * multiplier * (1 + longBonus) * (1 + runBonus) * (hit.golden ? GOLDEN_MULTIPLIER : 1))
   score.score += points
   score.hits += 1
   score.shotStreak += 1
 
-  const m = PigeonState.getMutable(bestEntity)
-  m.phase = PigeonPhase.Falling
-  m.t0 = now
   // The fall is tracked at the pigeon's feet, which hang below the canopy centre
-  m.sx = bestPos.x
-  m.sy = Math.max(0, bestPos.y - CANOPY_CENTRE * PIGEON_SCALE)
-  m.sz = bestPos.z
-  m.owner = shooter.address
+  hit.phase = PigeonPhase.Falling
+  hit.t0 = t
+  hit.sx = at.x
+  hit.sy = Math.max(0, at.y - CANOPY_CENTRE * PIGEON_SCALE)
+  hit.sz = at.z
+  hit.owner = shooter.address
+  pigeonsDirty = true
 
-  broadcast({
-    kind: 'hit',
-    who: shooter.address,
-    whoName: shooter.name,
-    points,
-    multiplier,
-    slot: st.slot,
-    x: bestPos.x,
-    y: bestPos.y,
-    z: bestPos.z
-  })
+  broadcast({ kind: 'hit', who: shooter.address, whoName: shooter.name, points, multiplier, slot: hit.slot, x: at.x, y: at.y, z: at.z })
 }
 
-function awardCatch(address: string, slot: number, golden: boolean, x: number, z: number) {
-  const s = scoreOf(address)
-  if (!s) return
+function awardCatch(p: Player, pg: PigeonWire) {
+  const s = p.score
   const multiplier = Math.min(MAX_CATCH_MULTIPLIER, 1 + STREAK_STEP * s.catchStreak)
-  const points = Math.round(POINTS_CATCH * multiplier * (golden ? GOLDEN_MULTIPLIER : 1))
+  const points = Math.round(POINTS_CATCH * multiplier * (pg.golden ? GOLDEN_MULTIPLIER : 1))
   s.score += points
   s.catches += 1
   s.catchStreak += 1
-  broadcast({ kind: 'catch', who: address, whoName: nameOf(address), points, multiplier, slot, x, y: 0, z })
+  scoresDirty = true
+  broadcast({ kind: 'catch', who: p.address, whoName: p.name, points, multiplier, slot: pg.slot, x: pg.sx, y: 0, z: pg.sz })
 }
 
-function awardGrab(address: string, owner: string, slot: number, golden: boolean, x: number, z: number) {
-  const s = scoreOf(address)
-  if (!s) return
-  const points = Math.round(POINTS_GRAB * (golden ? GOLDEN_MULTIPLIER : 1))
+function awardGrab(p: Player, pg: PigeonWire) {
+  const s = p.score
+  const points = Math.round(POINTS_GRAB * (pg.golden ? GOLDEN_MULTIPLIER : 1))
   s.score += points
   s.grabs += 1
-  const stolen = owner !== '' && owner !== address
+  scoresDirty = true
+  const owner = players.get(pg.owner)
+  const stolen = pg.owner !== '' && pg.owner !== p.address
   broadcast({
     kind: stolen ? 'steal' : 'grab',
-    who: address,
-    whoName: nameOf(address),
-    other: owner,
-    otherName: owner ? nameOf(owner) : '',
+    who: p.address,
+    whoName: p.name,
+    other: pg.owner,
+    otherName: owner?.name ?? '',
     points,
-    slot,
-    x,
+    slot: pg.slot,
+    x: pg.sx,
     y: 0,
-    z
+    z: pg.sz
   })
 }

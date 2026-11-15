@@ -22,8 +22,8 @@ import {
   PLAYER_COLOURS
 } from '../shared/config'
 import { pigeonPose } from '../shared/flight'
-import { PigeonPhase, PigeonState, PlayerScore } from '../shared/schemas'
-import { serverNow } from './clock'
+import { PigeonPhase } from '../shared/phases'
+import { game, serverNow } from './store'
 
 // ---------------------------------------------------------------------------
 // Draws the server's pigeons: stunt pigeons under parachutes, the cannons that
@@ -170,7 +170,7 @@ function setModels(v: Visual, golden: boolean) {
 }
 
 function colourOf(address: string): [number, number, number] {
-  for (const [, s] of engine.getEntitiesWith(PlayerScore)) {
+  for (const s of game.scores) {
     if (s.address === address) return PLAYER_COLOURS[s.colour % PLAYER_COLOURS.length]
   }
   return [1, 1, 1]
@@ -270,7 +270,7 @@ function pigeonSystem(rawDt: number) {
     }
   }
 
-  for (const [, st] of engine.getEntitiesWith(PigeonState)) {
+  for (const st of game.pigeons) {
     let v = visuals.get(st.slot)
     if (!v) {
       v = createVisual()

@@ -20,7 +20,7 @@ import {
 import { Vector3, Quaternion, Color4 } from '@dcl/sdk/math'
 import { MAX_SHOT_DISTANCE } from '../shared/config'
 import { room } from '../shared/messages'
-import { RoundPhase, RoundState } from '../shared/schemas'
+import { roundIsPlaying } from './store'
 
 // ---------------------------------------------------------------------------
 // Hold, aim, release (Joel's controls). Holding switches to a first-person aim
@@ -154,11 +154,6 @@ function updateShotLines(dt: number) {
 // ---------------------------------------------------------------------------
 // Firing
 // ---------------------------------------------------------------------------
-function roundIsPlaying(): boolean {
-  for (const [, r] of engine.getEntitiesWith(RoundState)) return r.phase === RoundPhase.Playing
-  return false
-}
-
 function shoot() {
   const pointerInfo = PrimaryPointerInfo.getOrNull(engine.RootEntity)
   const camera = Transform.getOrNull(engine.CameraEntity)

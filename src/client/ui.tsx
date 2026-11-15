@@ -1,10 +1,9 @@
 import ReactEcs, { ReactEcsRenderer, UiEntity, Label } from '@dcl/sdk/react-ecs'
 import { engine, PointerLock } from '@dcl/sdk/ecs'
 import { Color4 } from '@dcl/sdk/math'
-import { isStateSyncronized } from '@dcl/sdk/network'
 import { MAX_CATCH_MULTIPLIER, MAX_SHOT_MULTIPLIER, PLAYER_COLOURS, STREAK_STEP } from '../shared/config'
-import { PlayerScore, RoundPhase, RoundState } from '../shared/schemas'
-import { serverAlive, serverNow } from './clock'
+import { RoundPhase } from '../shared/phases'
+import { game, serverAlive, serverNow } from './store'
 import { getMyAddress, liveToasts } from './state'
 
 // ---------------------------------------------------------------------------
@@ -20,14 +19,13 @@ type ScoreRow = { address: string; name: string; colour: number; score: number; 
 
 function scores(): ScoreRow[] {
   const rows: ScoreRow[] = []
-  for (const [, s] of engine.getEntitiesWith(PlayerScore)) rows.push({ ...s })
+  for (const s of game.scores) rows.push({ ...s })
   rows.sort((a, b) => b.score - a.score)
   return rows
 }
 
 function round() {
-  for (const [, r] of engine.getEntitiesWith(RoundState)) return r
-  return null
+  return game.round
 }
 
 function rgb(c: [number, number, number], a = 1): Color4 {
@@ -71,9 +69,7 @@ const GameUi = () => {
         <Label value={'Score ' + (mine?.score ?? 0)} fontSize={24} color={Color4.White()} uiTransform={{ width: 150, height: 40 }} textAlign="middle-left" />
         <Label
           value={
-            !isStateSyncronized()
-              ? 'Connecting...'
-              : !alive
+            !alive
               ? 'Waking server...'
               : r?.phase === RoundPhase.Playing
               ? timeLeft(Number(r.endsAt))
