@@ -3,8 +3,8 @@
   "skipPublishWarning": false,
   "deployments": {
     "world:bigyellowfishes.dcl.eth:0,0": {
-      "publishedAt": 1794734062966,
-      "deploymentHash": "bafkreibnp7a32aj2bo4f2sxmxgtyugi5jleej3juwkvsdiccuwqkl5f5iq",
+      "publishedAt": 1794756013229,
+      "deploymentHash": "bafkreie7yeibt77w26blvj7wfhj2masbvz2vuxn3zjyc75xqq3sh2aqoi4",
       "parcel": "0,0",
       "worldName": "bigyellowfishes.dcl.eth"
     }
