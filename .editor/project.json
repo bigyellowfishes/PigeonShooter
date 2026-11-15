@@ -1,4 +1,12 @@
 {
   "id": "90141604-9c40-411c-b1eb-4e9550266408",
-  "skipPublishWarning": false
+  "skipPublishWarning": false,
+  "deployments": {
+    "world:bigyellowfishes.dcl.eth:0,0": {
+      "publishedAt": 1794734062966,
+      "deploymentHash": "bafkreibnp7a32aj2bo4f2sxmxgtyugi5jleej3juwkvsdiccuwqkl5f5iq",
+      "parcel": "0,0",
+      "worldName": "bigyellowfishes.dcl.eth"
+    }
+  }
 }

@@ -4857,7 +4857,7 @@
       }
     },
     {
-      "name": "inspector::SceneMetadata-v5",
+      "name": "inspector::SceneMetadata-v6",
       "jsonSchema": {
         "type": "object",
         "properties": {
@@ -5190,6 +5190,26 @@
             "optionalJsonSchema": {
               "type": "boolean",
               "serializationType": "boolean"
+            }
+          },
+          "multiplayerServer": {
+            "type": "boolean",
+            "serializationType": "optional",
+            "optionalJsonSchema": {
+              "type": "boolean",
+              "serializationType": "boolean"
+            }
+          },
+          "logsPermissions": {
+            "type": "array",
+            "serializationType": "optional",
+            "optionalJsonSchema": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "serializationType": "utf8-string"
+              },
+              "serializationType": "array"
             }
           }
         },
@@ -9351,7 +9371,9 @@
             },
             "creator": "",
             "disableNearbyVoiceChat": false,
-            "hideLandscapeTerrain": false
+            "hideLandscapeTerrain": false,
+            "multiplayerServer": true,
+            "logsPermissions": []
           }
         }
       }
