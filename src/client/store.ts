@@ -1,5 +1,6 @@
 import { PigeonWire, ScoreWire } from '../shared/messages'
 import { RoundPhase } from '../shared/phases'
+import { ArenaWire, BoardWire, DEFAULT_LOOK, MeWire } from '../shared/rules'
 
 /**
  * What this scene knows about the game, as the server last told it. Filled in by
@@ -9,7 +10,32 @@ import { RoundPhase } from '../shared/phases'
 export const game = {
   round: { phase: RoundPhase.Waiting as number, endsAt: 0, round: 0 },
   pigeons: [] as PigeonWire[],
-  scores: [] as ScoreWire[]
+  scores: [] as ScoreWire[],
+  me: {
+    ready: false,
+    budget: 0,
+    gun: 'pistol',
+    perks: [],
+    lastShotAt: 0,
+    xp: 0,
+    level: 1,
+    feathers: 0,
+    owned: [],
+    paint: DEFAULT_LOOK.paint,
+    trace: DEFAULT_LOOK.trace,
+    title: DEFAULT_LOOK.title,
+    top3Weeks: 0,
+    weekBest: 0
+  } as MeWire,
+  heardMe: false,
+  arena: { perks: [], golden: false, goldenAt: 0, weekId: '', weekEnds: 0 } as ArenaWire,
+  board: { weekId: '', entries: [] } as BoardWire
+}
+
+/** Running perks right now (server time) */
+export function activePerks() {
+  const t = serverNow()
+  return game.arena.perks.filter((p) => t >= p.start && t < p.end)
 }
 
 // ---------------------------------------------------------------------------
