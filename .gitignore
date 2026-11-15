@@ -23,3 +23,6 @@ yarn-error.log*
 # OS Generated Files
 .DS_Store
 Thumbs.db
+
+# git bundles used to hand over commits
+*.bundle
