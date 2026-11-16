@@ -6,12 +6,12 @@ import { Vector3 } from '@dcl/sdk/math'
 // ---------------------------------------------------------------------------
 
 // Rounds
-export const ROUND_SECONDS = 60
-export const BREAK_SECONDS = 15
+export const ROUND_SECONDS = 120
+export const BREAK_SECONDS = 20
 export const MIN_PLAYERS_TO_START = 1 // GDD: a solo player can play rounds against their own best
 
 // Pigeons
-export const PIGEON_COUNT = 8 // cap on pigeons in the arena at once
+export const PIGEON_COUNT = 12 // cap on pigeons in the arena at once
 export const RELAUNCH_MIN = 1.0 // delay before an idle pigeon is fired again
 export const RELAUNCH_MAX = 4.0
 export const FIRST_LAUNCH_SPREAD = 6.0 // stagger the first volley of a round
@@ -46,13 +46,13 @@ export const POINTS_HIT = 100
 export const POINTS_CATCH = 150
 export const POINTS_GRAB = 75 // a landed pigeon is worth half a catch
 export const STREAK_STEP = 0.5 // each hit (or catch) in a row adds this to the multiplier
-export const MAX_SHOT_MULTIPLIER = 4
+export const MAX_SHOT_MULTIPLIER = 2
 export const MAX_CATCH_MULTIPLIER = 3
 export const LONG_SHOT_FROM = 25 // metres; longer shots earn a bonus
-export const LONG_SHOT_MAX_BONUS = 0.6 // +60% at 85 m or more
+export const LONG_SHOT_MAX_BONUS = 0.2 // +60% at 85 m or more
 export const LONG_SHOT_SPAN = 60
 export const RUNNING_SPEED = 3 // m/s; shooting while moving faster than this
-export const RUNNING_BONUS = 0.25 // earns +25%
+export const RUNNING_BONUS = 0.1 // earns +25%
 export const GOLDEN_MULTIPLIER = 2
 
 // Visuals
