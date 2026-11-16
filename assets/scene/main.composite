@@ -142,27 +142,6 @@
             "parent": 513
           }
         },
-        "516": {
-          "json": {
-            "position": {
-              "x": 0,
-              "y": 0,
-              "z": 0
-            },
-            "scale": {
-              "x": 1,
-              "y": 1,
-              "z": 1
-            },
-            "rotation": {
-              "x": 0,
-              "y": 0,
-              "z": 0,
-              "w": 1
-            },
-            "parent": 513
-          }
-        },
         "517": {
           "json": {
             "position": {
@@ -2556,6 +2535,27 @@
             },
             "parent": 512
           }
+        },
+        "631": {
+          "json": {
+            "position": {
+              "x": 0,
+              "y": 0,
+              "z": 0
+            },
+            "rotation": {
+              "x": 0,
+              "y": 0,
+              "z": 0,
+              "w": 1
+            },
+            "scale": {
+              "x": 1,
+              "y": 1,
+              "z": 1
+            },
+            "parent": 513
+          }
         }
       }
     },
@@ -2857,13 +2857,6 @@
             "invisibleMeshesCollisionMask": 3
           }
         },
-        "516": {
-          "json": {
-            "src": "assets/Models/PigeonArena/PS_Arena_Wall.glb",
-            "visibleMeshesCollisionMask": 0,
-            "invisibleMeshesCollisionMask": 3
-          }
-        },
         "517": {
           "json": {
             "src": "assets/Models/PigeonArena/PS_Arena_Stands.glb",
@@ -2988,6 +2981,13 @@
             "src": "assets/Models/PigeonArena/PS_Cannon_12.glb",
             "visibleMeshesCollisionMask": 0,
             "invisibleMeshesCollisionMask": 0
+          }
+        },
+        "631": {
+          "json": {
+            "src": "assets/Models/PigeonArena/PS_Arena_Wall.glb",
+            "visibleMeshesCollisionMask": 0,
+            "invisibleMeshesCollisionMask": 3
           }
         }
       }
@@ -3181,11 +3181,6 @@
         "515": {
           "json": {
             "value": "Arena Floor"
-          }
-        },
-        "516": {
-          "json": {
-            "value": "Arena Wall"
           }
         },
         "517": {
@@ -3757,6 +3752,11 @@
           "json": {
             "value": "Paths"
           }
+        },
+        "631": {
+          "json": {
+            "value": "PS_Arena_Wall.glb"
+          }
         }
       }
     },
@@ -3853,9 +3853,9 @@
                 "children": [
                   514,
                   515,
-                  516,
                   517,
                   518,
+                  631,
                   519,
                   520,
                   521,
@@ -3869,10 +3869,6 @@
               },
               {
                 "entity": 515,
-                "children": []
-              },
-              {
-                "entity": 516,
                 "children": []
               },
               {
@@ -4474,6 +4470,10 @@
               {
                 "entity": 538,
                 "children": []
+              },
+              {
+                "entity": 631,
+                "children": []
               }
             ]
           }
@@ -4507,9 +4507,6 @@
           "json": {}
         },
         "515": {
-          "json": {}
-        },
-        "516": {
           "json": {}
         },
         "517": {
@@ -4852,6 +4849,9 @@
           "json": {}
         },
         "630": {
+          "json": {}
+        },
+        "631": {
           "json": {}
         }
       }
